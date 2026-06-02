@@ -1,0 +1,23 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  background: #f5f5f5;
+
+}
+
+:root {
+  --beige-bg: #f5efe6;
+  --beige-light: #faf6f1;
+  --text-dark: #1a1a1a;
+}
+
+body {
+  background-color: var(--beige-bg);
+  color: var(--text-dark);
+}
+

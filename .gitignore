@@ -1,0 +1,16 @@
+# Global ignores
+node_modules/
+*.log
+
+# Frontend env
+kaushal-frontend/.env
+
+# Backend env
+kaushal-backend/express-backend/.env
+kaushal-backend/express-backend/serviceAccountKey.json
+
+# Firebase sensitive files
+.firebase/
+.firebaserc
+firebase-debug.log
+firebase.json
