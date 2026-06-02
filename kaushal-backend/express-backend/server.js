@@ -3,6 +3,7 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const admin = require('firebase-admin');
+const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
 
@@ -262,6 +263,7 @@ app.get('/api/health', (req, res) => res.json({ ok: true, now: new Date().toISOS
 
 /**
  * POST /api/matches/:matchId/accept
+ * ✅ FIXED: Uses Firestore transaction to prevent race conditions
  */
 app.post('/api/matches/:matchId/accept', async (req, res) => {
   try {
@@ -270,51 +272,69 @@ app.post('/api/matches/:matchId/accept', async (req, res) => {
     if (!uid) return res.status(400).json({ error: 'uid required' });
 
     const matchRef = db.collection('matches').doc(matchId);
-    const matchSnap = await matchRef.get();
-    if (!matchSnap.exists) return res.status(404).json({ error: 'match not found' });
-    const match = matchSnap.data();
-
-    await matchRef.update({
-      acceptedBy: admin.firestore.FieldValue.arrayUnion(uid),
-      status: 'pending'
-    });
-
-    const updated = (await matchRef.get()).data();
-    const acceptedBy = updated.acceptedBy || [];
-
-    const bothAccepted = [updated.userA, updated.userB].every(p => acceptedBy.includes(p));
-    if (bothAccepted) {
-      const sessionRef = db.collection('sessions').doc();
-      const now = admin.firestore.FieldValue.serverTimestamp();
-      const sessionData = {
-        matchId,
-        participants: [updated.userA, updated.userB],
-        startedAt: now,
-        endedAt: null,
-        completedBy: [],
-        createdAt: now
-      };
-      await sessionRef.set(sessionData);
-
-      await matchRef.update({ status: 'in_session', sessionId: sessionRef.id });
-
-      const batch = db.batch();
-      [updated.userA, updated.userB].forEach(uid => {
-        const nRef = db.collection('notifications').doc();
-        batch.set(nRef, {
-          userId: uid,
+    
+    // Use transaction for atomicity
+    const result = await db.runTransaction(async (transaction) => {
+      const matchSnap = await transaction.get(matchRef);
+      if (!matchSnap.exists) throw new Error('match not found');
+      
+      const match = matchSnap.data();
+      const acceptedBy = match.acceptedBy || [];
+      
+      // Prevent duplicate acceptance
+      if (acceptedBy.includes(uid)) {
+        return { ok: true, alreadyAccepted: true, acceptedBy };
+      }
+      
+      // Add this user to acceptedBy
+      const updatedAcceptedBy = [...acceptedBy, uid];
+      transaction.update(matchRef, { acceptedBy: updatedAcceptedBy });
+      
+      // Check if both have now accepted
+      const bothAccepted = [match.userA, match.userB].every(p => updatedAcceptedBy.includes(p));
+      
+      if (bothAccepted && !match.sessionId) {
+        // Create session atomically in the same transaction
+        const sessionRef = db.collection('sessions').doc();
+        const now = admin.firestore.FieldValue.serverTimestamp();
+        const sessionData = {
+          matchId,
+          participants: [match.userA, match.userB],
+          startedAt: now,
+          endedAt: null,
+          completedBy: [],
+          status: 'in_session',
+          createdAt: now
+        };
+        
+        transaction.set(sessionRef, sessionData);
+        transaction.update(matchRef, { status: 'in_session', sessionId: sessionRef.id });
+        
+        // Create notifications in same transaction
+        const n1 = db.collection('notifications').doc();
+        const n2 = db.collection('notifications').doc();
+        transaction.set(n1, {
+          userId: match.userA,
           type: 'session_started',
           payload: { sessionId: sessionRef.id, matchId },
           read: false,
           createdAt: now
         });
-      });
-      await batch.commit();
+        transaction.set(n2, {
+          userId: match.userB,
+          type: 'session_started',
+          payload: { sessionId: sessionRef.id, matchId },
+          read: false,
+          createdAt: now
+        });
+        
+        return { ok: true, sessionCreated: true, sessionId: sessionRef.id };
+      }
+      
+      return { ok: true, acceptedBy: updatedAcceptedBy };
+    });
 
-      return res.json({ ok: true, sessionCreated: true, sessionId: sessionRef.id });
-    }
-
-    return res.json({ ok: true, acceptedBy });
+    return res.json(result);
   } catch (err) {
     console.error('POST /api/matches/:matchId/accept error:', err);
     return res.status(500).json({ error: err.message || err.toString() });
@@ -458,6 +478,7 @@ app.post('/api/ratings/:ratingRequestId', async (req, res) => {
 
 /**
  * POST /api/matches/:matchId/create-session
+ * ✅ FIXED: Uses Firestore transaction to prevent race conditions and UUID for room ID
  */
 app.post('/api/matches/:matchId/create-session', async (req, res) => {
   try {
@@ -466,52 +487,59 @@ app.post('/api/matches/:matchId/create-session', async (req, res) => {
     if (!uid) return res.status(400).json({ error: 'uid required' });
 
     const matchRef = db.collection('matches').doc(matchId);
-    const matchSnap = await matchRef.get();
-    if (!matchSnap.exists) return res.status(404).json({ error: 'match not found' });
-    const match = matchSnap.data();
+    
+    // Use transaction for atomicity
+    const result = await db.runTransaction(async (transaction) => {
+      const matchSnap = await transaction.get(matchRef);
+      if (!matchSnap.exists) throw new Error('match not found');
+      
+      const match = matchSnap.data();
+      
+      // Check if user is a participant
+      if (![match.userA, match.userB].includes(uid)) {
+        throw new Error('Caller not a participant of this match');
+      }
+      
+      // If session already exists, return it
+      if (match.sessionId) {
+        return { ok: true, sessionId: match.sessionId, alreadyExists: true };
+      }
+      
+      // Create new session with UUID roomID (prevents collisions)
+      const roomId = crypto.randomUUID();
+      const now = admin.firestore.FieldValue.serverTimestamp();
+      
+      const sessionRef = db.collection('sessions').doc();
+      const sessionData = {
+        matchId,
+        participants: [match.userA, match.userB],
+        roomId,
+        startedAt: now,
+        endedAt: null,
+        status: 'in_session',
+        createdAt: now
+      };
+      
+      // Create session and update match atomically
+      transaction.set(sessionRef, sessionData);
+      transaction.update(matchRef, { status: 'in_session', sessionId: sessionRef.id });
+      
+      // Create notifications
+      const n1 = db.collection('notifications').doc();
+      const n2 = db.collection('notifications').doc();
+      const notifPayload = {
+        type: 'session_created',
+        payload: { sessionId: sessionRef.id, roomId },
+        read: false,
+        createdAt: now
+      };
+      transaction.set(n1, { userId: match.userA, ...notifPayload });
+      transaction.set(n2, { userId: match.userB, ...notifPayload });
+      
+      return { ok: true, sessionId: sessionRef.id, roomId };
+    });
 
-    if (![match.userA, match.userB].includes(uid)) {
-      return res.status(403).json({ error: 'caller not a participant of this match' });
-    }
-
-    if (match.sessionId) {
-      const existingSession = (await db.collection('sessions').doc(match.sessionId).get()).data();
-      return res.json({ ok: true, sessionId: match.sessionId, roomId: existingSession ? existingSession.roomId : null, alreadyExists: true });
-    }
-
-    const now = Date.now();
-    const randomPart = Math.floor(Math.random() * 1e9).toString(36);
-    const roomId = `room-${matchId.substring(0,6)}-${now.toString(36)}-${randomPart}`;
-
-    const sessionRef = db.collection('sessions').doc();
-    const sessionData = {
-      matchId,
-      participants: [match.userA, match.userB],
-      roomId,
-      startedAt: admin.firestore.FieldValue.serverTimestamp(),
-      endedAt: null,
-      status: 'in_session',
-      createdAt: admin.firestore.FieldValue.serverTimestamp()
-    };
-
-    const batch = db.batch();
-    batch.set(sessionRef, sessionData);
-    batch.update(matchRef, { status: 'in_session', sessionId: sessionRef.id });
-
-    const n1 = db.collection('notifications').doc();
-    const n2 = db.collection('notifications').doc();
-    const notifPayload = {
-      type: 'session_created',
-      payload: { sessionId: sessionRef.id, roomId },
-      read: false,
-      createdAt: admin.firestore.FieldValue.serverTimestamp()
-    };
-    batch.set(n1, { userId: match.userA, ...notifPayload });
-    batch.set(n2, { userId: match.userB, ...notifPayload });
-
-    await batch.commit();
-
-    return res.json({ ok: true, sessionId: sessionRef.id, roomId });
+    return res.json(result);
   } catch (err) {
     console.error('POST /api/matches/:matchId/create-session error:', err);
     return res.status(500).json({ error: err.message || err.toString() });

@@ -6,16 +6,14 @@ import { getDatabase } from "firebase/database";
 import { getAuth } from "firebase/auth";
 
 const firebaseConfig = {
-
   apiKey: "AIzaSyCDncW8OeFRUZ6oLgfqCJpDbU_ww8TTCAw",
   authDomain: "kaushal-video-chat.firebaseapp.com",
-  databaseURL: "https://kaushal-video-chat-default-rtdb.asia-southeast1.firebasedatabase.app",
+  databaseURL: "https://kaushal-video-chat-default-rtdb.firebaseio.com",
   projectId: "kaushal-video-chat",
   storageBucket: "kaushal-video-chat.firebasestorage.app",
   messagingSenderId: "968116805509",
   appId: "1:968116805509:web:8eb986f4c7f6d62cf86eec",
-  measurementId: "G-GPJFCNP13S",
-  databaseURL: "https://kaushal-video-chat-default-rtdb.firebaseio.com"
+  measurementId: "G-GPJFCNP13S"
 };
 
 // Initialize Firebase
