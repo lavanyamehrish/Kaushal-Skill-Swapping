@@ -4,9 +4,6 @@
   "buildCommand": "cd kaushal-frontend && npm run build",
   "outputDirectory": "kaushal-frontend/dist",
   "framework": "vite",
-  "env": {
-    "VITE_API_URL": "@api_url"
-  },
   "rewrites": [
     {
       "source": "/(.*)",
