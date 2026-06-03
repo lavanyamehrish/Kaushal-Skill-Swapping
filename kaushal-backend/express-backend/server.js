@@ -4,29 +4,30 @@ const express = require('express');
 const cors = require('cors');
 const admin = require('firebase-admin');
 const crypto = require('crypto');
-const path = require('path');
-const fs = require('fs');
 
-const SERVICE_KEY_PATH = path.join(__dirname, 'serviceAccountKey.json');
+// ✅ Firebase Admin initialization with environment variables (Railway compatible)
+const requiredEnvVars = ['FIREBASE_PROJECT_ID', 'FIREBASE_CLIENT_EMAIL', 'FIREBASE_PRIVATE_KEY'];
+const missingVars = requiredEnvVars.filter(varName => !process.env[varName]);
 
-// Check if service account key exists
-if (!fs.existsSync(SERVICE_KEY_PATH)) {
-  console.error('❌ serviceAccountKey.json not found at:', SERVICE_KEY_PATH);
-  console.error('Please download your Firebase service account key and place it in the express-backend folder');
-  process.exit(1);
-}
-
-if (!process.env.FIREBASE_PROJECT_ID) {
-  console.error('❌ Missing FIREBASE_PROJECT_ID in .env');
+if (missingVars.length > 0) {
+  console.error('❌ Missing required environment variables:', missingVars.join(', '));
+  console.error('Please set the following in your .env or Railway environment:');
+  console.error('  - FIREBASE_PROJECT_ID');
+  console.error('  - FIREBASE_CLIENT_EMAIL');
+  console.error('  - FIREBASE_PRIVATE_KEY');
   process.exit(1);
 }
 
 try {
   admin.initializeApp({
-    credential: admin.credential.cert(require(SERVICE_KEY_PATH)),
-    projectId: process.env.FIREBASE_PROJECT_ID
+    credential: admin.credential.cert({
+      projectId: process.env.FIREBASE_PROJECT_ID,
+      clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+      privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n')
+    })
   });
-  console.log('✅ Firebase Admin initialized successfully');
+  console.log('✅ Firebase Admin initialized successfully with environment variables');
+  console.log('✅ Project ID:', process.env.FIREBASE_PROJECT_ID);
 } catch (err) {
   console.error('❌ Failed to initialize Firebase Admin:', err.message);
   process.exit(1);
